@@ -38,4 +38,5 @@ export interface NotionConfig {
   apiKey: string;
   databaseId: string;
   useProxy: boolean;
+  proxyUrl?: string; // Optional custom proxy URL
 }

@@ -1,7 +1,7 @@
 import { NotionConfig, Trade, TradeType } from '../types';
 
-// Notion API requires a proxy when called from the browser due to CORS policies.
-const CORS_PROXY = 'https://corsproxy.io/?'; 
+// Use the user's worker as default if not specified
+const DEFAULT_PROXY = 'https://appli-trade.david-ollivier-fr.workers.dev/'; 
 const NOTION_API_BASE = 'https://api.notion.com/v1';
 
 const getHeaders = (config: NotionConfig) => ({
@@ -10,15 +10,70 @@ const getHeaders = (config: NotionConfig) => ({
   'Content-Type': 'application/json',
 });
 
-const getBaseUrl = (config: NotionConfig) => {
-  return config.useProxy ? `${CORS_PROXY}${encodeURIComponent(NOTION_API_BASE)}` : NOTION_API_BASE;
+// New Helper to perform proxied fetch correctly
+// It constructs the full target URL, encodes it, and appends it to the proxy URL
+const proxiedFetch = async (endpoint: string, config: NotionConfig, options: RequestInit = {}) => {
+    // 1. Construct the Real Target URL
+    const targetUrl = `${NOTION_API_BASE}${endpoint}`;
+    
+    let fetchUrl = targetUrl;
+    
+    if (config.useProxy) {
+      let proxy = config.proxyUrl || DEFAULT_PROXY;
+      
+      // Ensure proxy ends with a slash if it doesn't have query params
+      // This is important for path-based proxies like Cloudflare Workers
+      if (!proxy.includes('?') && !proxy.endsWith('/')) {
+          proxy += '/';
+      }
+      
+      // 2. Encode the ENTIRE target URL
+      // This is crucial. We don't want the proxy to interpret parts of the Notion path.
+      // E.g. https://worker.dev/https%3A%2F%2Fapi.notion.com%2Fv1%2Fdatabases%2F...
+      fetchUrl = `${proxy}${encodeURIComponent(targetUrl)}`;
+    }
+  
+    const res = await fetch(fetchUrl, {
+       ...options,
+       headers: {
+           ...options.headers,
+           ...getHeaders(config),
+       },
+       // Important: prevent browser caching of API responses
+       cache: 'no-store'
+    });
+
+    if (!res.ok) {
+        let errText = await res.text();
+        try {
+            const jsonErr = JSON.parse(errText);
+            errText = jsonErr.message || errText;
+        } catch (e) {
+            // not json
+        }
+        
+        if (res.status === 404) {
+             // If proxy returns 404, it might be the proxy itself or Notion
+             if (errText.includes('Notion')) {
+                 throw new Error("Base de données introuvable (404). Vérifiez l'ID et la connexion de l'intégration.");
+             }
+             // Fallback
+             throw new Error(`Erreur 404 (Not Found). Base de données introuvable ou URL incorrecte.`);
+        }
+        if (res.status === 401) {
+            throw new Error("Non autorisé (401). Vérifiez votre clé API Notion.");
+        }
+        
+        throw new Error(`Erreur API (${res.status}): ${errText}`);
+    }
+    
+    return res;
 };
 
 export const fetchNotionTrades = async (config: NotionConfig): Promise<Trade[]> => {
   try {
-    const response = await fetch(`${getBaseUrl(config)}/databases/${config.databaseId}/query`, {
+    const response = await proxiedFetch(`/databases/${config.databaseId}/query`, config, {
       method: 'POST',
-      headers: getHeaders(config),
       body: JSON.stringify({
         sorts: [
           {
@@ -29,26 +84,8 @@ export const fetchNotionTrades = async (config: NotionConfig): Promise<Trade[]> 
       }),
     });
 
-    if (!response.ok) {
-      let errText = await response.text();
-      try {
-          const jsonErr = JSON.parse(errText);
-          errText = jsonErr.message || errText;
-      } catch (e) {
-          // not json
-      }
-      
-      if (response.status === 404) {
-          throw new Error("Base de données introuvable (404). Avez-vous connecté l'intégration à la page Notion ? (Menu '...' > Connections > Votre Intégration)");
-      }
-      if (response.status === 401) {
-          throw new Error("Non autorisé (401). Vérifiez votre clé API.");
-      }
-      
-      throw new Error(`Erreur Notion (${response.status}): ${errText}`);
-    }
-
     const data = await response.json();
+    console.log("Notion Data Columns:", data.results.length > 0 ? Object.keys(data.results[0].properties) : "No data");
 
     // Map Notion properties to our Trade interface
     return data.results.map((page: any) => {
@@ -83,12 +120,14 @@ export const fetchNotionTrades = async (config: NotionConfig): Promise<Trade[]> 
 
 export const addNotionTrade = async (config: NotionConfig, trade: Trade): Promise<string> => {
   try {
-    const response = await fetch(`${getBaseUrl(config)}/pages`, {
+    const response = await proxiedFetch('/pages', config, {
       method: 'POST',
-      headers: getHeaders(config),
       body: JSON.stringify({
         parent: { database_id: config.databaseId },
         properties: {
+          'Jour': {
+            title: [{ text: { content: `@${trade.date}` } }] // Set title to date or ID
+          },
           'Pair': {
             select: { name: trade.pair }
           },
@@ -116,38 +155,27 @@ export const addNotionTrade = async (config: NotionConfig, trade: Trade): Promis
         }
       }),
     });
-
-    if (!response.ok) {
-        let errText = await response.text();
-        try {
-            const jsonErr = JSON.parse(errText);
-            errText = jsonErr.message || errText;
-        } catch(e) {}
-        throw new Error(`Notion Add Error (${response.status}): ${errText}`);
-    }
     
     const data = await response.json();
     return data.id; // Return the new Notion Page ID
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error adding to Notion:', error);
+    // Helper to find missing columns in error message
+    if(error.message && error.message.includes("property that exists")) {
+        throw new Error(`Colonne manquante dans Notion: ${error.message}. Vérifiez que vous avez bien 'Notes', 'Entry', 'Exit', 'Setup' etc.`);
+    }
     throw error;
   }
 };
 
 export const deleteNotionTrade = async (config: NotionConfig, pageId: string): Promise<void> => {
     try {
-        const response = await fetch(`${getBaseUrl(config)}/pages/${pageId}`, {
+        await proxiedFetch(`/pages/${pageId}`, config, {
             method: 'PATCH', // Update to archive
-            headers: getHeaders(config),
             body: JSON.stringify({
                 archived: true
             })
         });
-
-        if (!response.ok) {
-             let errText = await response.text();
-            throw new Error(`Failed to delete: ${errText}`);
-        }
     } catch (error) {
         console.error('Error deleting from Notion:', error);
         throw error;
@@ -158,20 +186,10 @@ export const deleteNotionTrade = async (config: NotionConfig, pageId: string): P
 export const testNotionConnection = async (config: NotionConfig): Promise<boolean> => {
     try {
         // Just try to fetch the database info
-        const response = await fetch(`${getBaseUrl(config)}/databases/${config.databaseId}`, {
-            method: 'GET',
-            headers: getHeaders(config),
+        await proxiedFetch(`/databases/${config.databaseId}`, config, {
+            method: 'GET'
         });
-
-        if (response.status === 200) return true;
-        
-        let err = await response.text();
-        try {
-            const json = JSON.parse(err);
-            err = json.message || err;
-        } catch(e){}
-        
-        throw new Error(err);
+        return true;
     } catch (error) {
         throw error;
     }

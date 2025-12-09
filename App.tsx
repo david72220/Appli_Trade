@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, List, Plus, BrainCircuit, Settings, RotateCw, AlertCircle, Database, CheckCircle, Wifi, ShieldCheck, LogIn } from 'lucide-react';
+import { LayoutDashboard, List, Plus, BrainCircuit, Settings, RotateCw, AlertCircle, Database, CheckCircle, Wifi, ShieldCheck, LogIn, Globe } from 'lucide-react';
 import { Dashboard } from './components/Dashboard';
 import { TradeList } from './components/TradeList';
 import { TradeForm } from './components/TradeForm';
@@ -10,6 +10,20 @@ import { fetchNotionTrades, addNotionTrade, deleteNotionTrade, testNotionConnect
 
 const LOCAL_STORAGE_KEY = 'tradejournal_data_v1';
 const NOTION_CONFIG_KEY = 'tradejournal_notion_config';
+// Default to user's Cloudflare worker
+const DEFAULT_PROXY_URL = 'https://appli-trade.david-ollivier-fr.workers.dev/';
+
+const cleanApiKey = (key: string) => key.trim();
+const cleanNotionId = (input: string) => {
+    const trimmed = input.trim();
+    // Check if it's a full URL
+    if (trimmed.includes('notion.so')) {
+        // Extract ID from URL: https://www.notion.so/My-Db-Name-32chrID?v=...
+        const matches = trimmed.match(/([a-f0-9]{32})/);
+        if (matches && matches[1]) return matches[1];
+    }
+    return trimmed;
+}
 
 function App() {
   // 1. Initialize Config from LocalStorage ONLY (No hardcoded secrets)
@@ -32,10 +46,12 @@ function App() {
   const [onboardingData, setOnboardingData] = useState<NotionConfig>({
     apiKey: '',
     databaseId: '',
-    useProxy: true
+    useProxy: true,
+    proxyUrl: DEFAULT_PROXY_URL
   });
   const [testStatus, setTestStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
+  const [showAdvancedOnboarding, setShowAdvancedOnboarding] = useState(false);
 
   // Initial Load
   useEffect(() => {
@@ -86,7 +102,7 @@ function App() {
     const tempTrade = { ...newTrade, id: 'temp-' + Date.now() };
     setTrades(prev => [tempTrade, ...prev]);
 
-    if (notionConfig) {
+    if (notionConfig && notionConfig.apiKey !== 'local') {
       try {
         const notionId = await addNotionTrade(notionConfig, newTrade);
         // Update the temp ID with real Notion ID
@@ -108,7 +124,7 @@ function App() {
     const originalTrades = [...trades];
     setTrades(prev => prev.filter(t => t.id !== id));
 
-    if (notionConfig) {
+    if (notionConfig && notionConfig.apiKey !== 'local') {
       try {
         await deleteNotionTrade(notionConfig, id);
       } catch (err: any) {
@@ -131,10 +147,19 @@ function App() {
   const handleOnboardingTest = async () => {
     setTestStatus('loading');
     setTestMessage('Connexion...');
+    
+    const cleanData = {
+        ...onboardingData,
+        apiKey: cleanApiKey(onboardingData.apiKey),
+        databaseId: cleanNotionId(onboardingData.databaseId)
+    };
+
     try {
-        await testNotionConnection(onboardingData);
+        await testNotionConnection(cleanData);
         setTestStatus('success');
         setTestMessage('Succès ! Base de données connectée.');
+        // Update state with cleaned data
+        setOnboardingData(cleanData);
     } catch (err: any) {
         setTestStatus('error');
         setTestMessage(err.message);
@@ -142,8 +167,14 @@ function App() {
   };
 
   const handleOnboardingSave = () => {
-      setNotionConfig(onboardingData);
-      localStorage.setItem(NOTION_CONFIG_KEY, JSON.stringify(onboardingData));
+      // Ensure we use clean data
+      const finalData = {
+          ...onboardingData,
+          apiKey: cleanApiKey(onboardingData.apiKey),
+          databaseId: cleanNotionId(onboardingData.databaseId)
+      };
+      setNotionConfig(finalData);
+      localStorage.setItem(NOTION_CONFIG_KEY, JSON.stringify(finalData));
   };
 
   // --- WELCOME SCREEN (If no config) ---
@@ -181,11 +212,34 @@ function App() {
                               <label className="block text-sm font-medium text-slate-400 mb-1">Database ID</label>
                               <input 
                                   type="text" 
-                                  placeholder="Ex: 2c496280..."
+                                  placeholder="Ex: 2c496280... ou URL complète"
                                   className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-primary outline-none transition-all"
                                   value={onboardingData.databaseId}
                                   onChange={e => setOnboardingData(prev => ({...prev, databaseId: e.target.value}))}
                               />
+                          </div>
+
+                          <div className="pt-2">
+                            <button 
+                                onClick={() => setShowAdvancedOnboarding(!showAdvancedOnboarding)}
+                                className="text-xs text-slate-500 hover:text-white flex items-center gap-1 mb-2"
+                            >
+                                {showAdvancedOnboarding ? 'Masquer' : 'Afficher'} options avancées (Proxy)
+                            </button>
+                            
+                            {showAdvancedOnboarding && (
+                                <div className="bg-slate-800 p-3 rounded-lg border border-slate-700 mb-4 animate-fade-in">
+                                    <label className="block text-xs font-bold text-slate-300 mb-1">Proxy URL (Cloudflare Worker)</label>
+                                    <input 
+                                        type="text" 
+                                        placeholder={DEFAULT_PROXY_URL}
+                                        className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-xs text-white mb-1"
+                                        value={onboardingData.proxyUrl}
+                                        onChange={e => setOnboardingData(prev => ({...prev, proxyUrl: e.target.value}))}
+                                    />
+                                    <p className="text-[10px] text-slate-500">Par défaut: Votre worker Cloudflare.</p>
+                                </div>
+                            )}
                           </div>
                           
                           <div className="flex items-center justify-between pt-2">

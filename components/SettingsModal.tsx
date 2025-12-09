@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { NotionConfig } from '../types';
-import { Settings, Save, X, AlertTriangle, Database, CheckCircle, Wifi } from 'lucide-react';
+import { Settings, Save, X, AlertTriangle, Database, CheckCircle, Wifi, Globe, RotateCw } from 'lucide-react';
 import { testNotionConnection } from '../services/notionService';
 
 interface SettingsModalProps {
@@ -9,11 +9,26 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
+const DEFAULT_PROXY_URL = 'https://appli-trade.david-ollivier-fr.workers.dev/';
+
+const cleanApiKey = (key: string) => key.trim();
+const cleanNotionId = (input: string) => {
+    const trimmed = input.trim();
+    // Check if it's a full URL
+    if (trimmed.includes('notion.so')) {
+        // Extract ID from URL: https://www.notion.so/My-Db-Name-32chrID?v=...
+        const matches = trimmed.match(/([a-f0-9]{32})/);
+        if (matches && matches[1]) return matches[1];
+    }
+    return trimmed;
+}
+
 export const SettingsModal: React.FC<SettingsModalProps> = ({ config, onSave, onClose }) => {
   const [formData, setFormData] = useState<NotionConfig>({
     apiKey: '',
     databaseId: '',
-    useProxy: true
+    useProxy: true,
+    proxyUrl: DEFAULT_PROXY_URL
   });
   
   const [testStatus, setTestStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -21,20 +36,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ config, onSave, on
 
   useEffect(() => {
     if (config) {
-      setFormData(config);
+      setFormData(prev => ({
+          ...prev, 
+          ...config, 
+          proxyUrl: config.proxyUrl || DEFAULT_PROXY_URL
+      }));
     }
   }, [config]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave(formData);
+    onSave({
+        ...formData,
+        apiKey: cleanApiKey(formData.apiKey),
+        databaseId: cleanNotionId(formData.databaseId)
+    });
   };
 
   const handleTestConnection = async () => {
       setTestStatus('loading');
       setTestMessage('Test de connexion...');
+      const cleanData = {
+          ...formData,
+          apiKey: cleanApiKey(formData.apiKey),
+          databaseId: cleanNotionId(formData.databaseId)
+      };
+      
       try {
-          await testNotionConnection(formData);
+          await testNotionConnection(cleanData);
           setTestStatus('success');
           setTestMessage('Connexion réussie ! Base de données trouvée.');
       } catch (err: any) {
@@ -45,7 +74,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ config, onSave, on
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-surface border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden max-h-[90vh] overflow-y-auto">
+      <div className="bg-surface border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden max-h-[90vh] overflow-y-auto custom-scrollbar">
         <div className="flex justify-between items-center p-6 border-b border-slate-700">
           <div className="flex items-center gap-2">
             <Settings className="text-primary" size={24} />
@@ -90,31 +119,76 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ config, onSave, on
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white focus:ring-2 focus:ring-primary outline-none"
                 />
             </div>
+            <p className="text-xs text-slate-500 mt-1">Collez l'ID ou l'URL complète de la base de données.</p>
           </div>
 
-          <div className="flex items-center justify-between bg-slate-800 p-3 rounded-lg border border-slate-700">
-             <div className="flex items-center gap-3">
-                <input
-                type="checkbox"
-                id="proxy"
-                checked={formData.useProxy}
-                onChange={(e) => setFormData(prev => ({ ...prev, useProxy: e.target.checked }))}
-                className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-primary focus:ring-primary"
-                />
-                <label htmlFor="proxy" className="text-sm text-slate-400">
-                    Utiliser Proxy CORS (Requis)
-                </label>
+          <div className="border-t border-slate-700 pt-4">
+             <div className="flex items-center justify-between mb-2">
+                 <h3 className="text-sm font-bold text-slate-300 flex items-center gap-2">
+                    <Globe size={16} /> Proxy CORS
+                 </h3>
+                 <div className="flex items-center gap-2">
+                    <input
+                        type="checkbox"
+                        id="proxy"
+                        checked={formData.useProxy}
+                        onChange={(e) => setFormData(prev => ({ ...prev, useProxy: e.target.checked }))}
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-primary focus:ring-primary"
+                    />
+                    <label htmlFor="proxy" className="text-sm text-slate-400">Activer</label>
+                 </div>
              </div>
              
-             <button 
+             {formData.useProxy && (
+                 <div>
+                    <input
+                        type="text"
+                        placeholder={DEFAULT_PROXY_URL}
+                        value={formData.proxyUrl}
+                        onChange={(e) => setFormData(prev => ({ ...prev, proxyUrl: e.target.value }))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:ring-2 focus:ring-primary outline-none"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                        Défaut: <code>{DEFAULT_PROXY_URL}</code>
+                    </p>
+                 </div>
+             )}
+          </div>
+
+          {/* Schema Helper Panel */}
+          <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 text-xs text-slate-400">
+             <p className="font-bold text-slate-300 mb-2">Colonnes requises dans Notion :</p>
+             <ul className="grid grid-cols-2 gap-2">
+                 <li><code className="bg-slate-800 px-1 rounded">Jour</code> (Titre)</li>
+                 <li><code className="bg-slate-800 px-1 rounded">Pair</code> (Select)</li>
+                 <li><code className="bg-slate-800 px-1 rounded">Date</code> (Date)</li>
+                 <li><code className="bg-slate-800 px-1 rounded">Type</code> (Select)</li>
+                 <li><code className="bg-slate-800 px-1 rounded">PnL</code> (Nombre)</li>
+                 <li><code className="bg-slate-800 px-1 rounded">Entry</code> (Nombre)</li>
+                 <li><code className="bg-slate-800 px-1 rounded">Exit</code> (Nombre)</li>
+                 <li><code className="bg-slate-800 px-1 rounded">Setup</code> (Texte)</li>
+                 <li><code className="bg-slate-800 px-1 rounded">Notes</code> (Texte)</li>
+             </ul>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 pt-2">
+            <button 
                 type="button" 
                 onClick={handleTestConnection}
                 disabled={!formData.apiKey || !formData.databaseId || testStatus === 'loading'}
-                className="text-xs bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded-md transition-colors flex items-center gap-2"
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
              >
-                {testStatus === 'loading' ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <Wifi size={14} />}
+                {testStatus === 'loading' ? <RotateCw size={16} className="animate-spin"/> : <Wifi size={16} />}
                 Tester
              </button>
+
+             <button
+                type="submit"
+                className="flex-[2] bg-primary hover:bg-blue-600 text-white font-bold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
+            >
+                <Save size={20} />
+                Sauvegarder
+            </button>
           </div>
 
           {testMessage && (
@@ -124,13 +198,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ config, onSave, on
               </div>
           )}
 
-          <button
-            type="submit"
-            className="w-full bg-primary hover:bg-blue-600 text-white font-bold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
-          >
-            <Save size={20} />
-            Sauvegarder & Synchroniser
-          </button>
         </form>
       </div>
     </div>
